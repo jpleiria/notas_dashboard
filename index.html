@@ -14,6 +14,7 @@
     #sync-status { margin-left:auto; font-size:.62rem; color:#cbd5e1; white-space:nowrap; }
     #sync-status.online { color:#86efac; }
     #sync-status.error { color:#fca5a5; }
+    #logout-notes { border:1px solid #64748b; border-radius:3px; padding:2px 5px; color:#e2e8f0; background:transparent; font-size:.6rem; font-weight:700; cursor:pointer; }
     #toolbar { padding:6px 8px; background:#e2e8f0; border:0; border-bottom:1px solid var(--line); }
     .ql-snow.ql-toolbar button:hover, .ql-snow.ql-toolbar button.ql-active, .ql-snow .ql-picker-label:hover, .ql-snow .ql-picker-label.ql-active { color:var(--blue); }
     main { flex:1; min-height:0; display:flex; padding:0; overflow:hidden; }
@@ -38,6 +39,7 @@
   <header>
     <h1>NOTAS PARTILHADAS</h1>
     <span id="sync-status">A preparar sincronização…</span>
+    <button id="logout-notes" type="button" hidden>SAIR</button>
   </header>
   <section id="access-gate" aria-label="Acesso às notas">
     <div class="access-card">
@@ -80,6 +82,7 @@
     const status = document.getElementById('sync-status');
     const gate = document.getElementById('access-gate');
     const editorShell = document.getElementById('editor-shell');
+    const logoutButton = document.getElementById('logout-notes');
     const codeInput = document.getElementById('access-code');
     const accessMessage = document.getElementById('access-message');
     const localKey = 'cbsl_notas_partilhadas_v1';
@@ -95,7 +98,7 @@
     function saveLocal() { localStorage.setItem(localKey, getHTML()); }
     function lockAccess(message = 'Código expirado — peça novo acesso à central.') {
       hasAccess = false; accessExpiresAt = null; unsubscribeNotes?.(); unsubscribeNotes = null;
-      quill.disable(); setHTML(''); editorShell.hidden = true; gate.hidden = false;
+      quill.disable(); setHTML(''); editorShell.hidden = true; gate.hidden = false; logoutButton.hidden = true;
       accessMessage.textContent = message; setStatus('Acesso restrito'); sessionStorage.removeItem('cbsl_notes_access');
     }
     function startNotesListener() {
@@ -108,7 +111,7 @@
       }, () => setStatus('Sem acesso à sincronização', 'error'));
     }
     function grantAccess(label, expiry = null) {
-      hasAccess = true; accessExpiresAt = expiry; gate.hidden = true; editorShell.hidden = false; quill.enable(); startNotesListener();
+      hasAccess = true; accessExpiresAt = expiry; gate.hidden = true; editorShell.hidden = false; quill.enable(); logoutButton.hidden = centralMode; startNotesListener();
       if (expiry) setTimeout(() => lockAccess(), Math.max(1000, expiry.getTime() - Date.now() + 200));
       setStatus(label, 'online');
     }
@@ -125,6 +128,7 @@
 
     document.getElementById('unlock-notes').addEventListener('click', () => validateAccess(codeInput.value));
     codeInput.addEventListener('keydown', event => { if (event.key === 'Enter') validateAccess(codeInput.value); });
+    logoutButton.addEventListener('click', () => lockAccess('Sessão terminada. Introduza um código para voltar a entrar.'));
     document.getElementById('clear-notes').addEventListener('click', () => { if (hasAccess && confirm('Apagar todas as notas partilhadas?')) { quill.setText(''); saveLocal(); window.syncSharedNotes?.(); } });
     quill.on('text-change', (delta, oldDelta, source) => { if (source === 'user' && hasAccess) { saveLocal(); window.syncSharedNotes?.(); } });
 
