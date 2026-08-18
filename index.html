@@ -15,6 +15,7 @@
     #sync-status.online { color:#86efac; }
     #sync-status.error { color:#fca5a5; }
     #access-time { color:#facc15; font:700 .62rem 'Courier New', monospace; white-space:nowrap; }
+    #history-notes { border:1px solid #64748b; border-radius:3px; padding:2px 5px; color:#e2e8f0; background:transparent; font-size:.6rem; font-weight:700; cursor:pointer; }
     #logout-notes { border:1px solid #64748b; border-radius:3px; padding:2px 5px; color:#e2e8f0; background:transparent; font-size:.6rem; font-weight:700; cursor:pointer; }
     #toolbar { padding:6px 8px; background:#e2e8f0; border:0; border-bottom:1px solid var(--line); }
     .ql-snow.ql-toolbar button:hover, .ql-snow.ql-toolbar button.ql-active, .ql-snow .ql-picker-label:hover, .ql-snow .ql-picker-label.ql-active { color:var(--blue); }
@@ -41,6 +42,7 @@
     <h1>NOTAS PARTILHADAS</h1>
     <span id="sync-status">A preparar sincronização…</span>
     <span id="access-time" hidden></span>
+    <button id="history-notes" type="button" hidden>HIST</button>
     <button id="logout-notes" type="button" hidden>SAIR</button>
   </header>
   <section id="access-gate" aria-label="Acesso às notas">
@@ -86,11 +88,14 @@
     const editorShell = document.getElementById('editor-shell');
     const logoutButton = document.getElementById('logout-notes');
     const accessTime = document.getElementById('access-time');
+    const historyButton = document.getElementById('history-notes');
     const codeInput = document.getElementById('access-code');
     const accessMessage = document.getElementById('access-message');
     const localKey = 'cbsl_notas_partilhadas_v1';
-    let saveTimer, accessTimer, accessExpiresAt, unsubscribeNotes, db, notesRef, codesRef, firestoreGetDocs, firestoreOnSnapshot;
+    let saveTimer, accessTimer, historyTimer, historySaveTimer, accessExpiresAt, unsubscribeNotes, db, notesRef, codesRef, centralHistoryRef, permanentHistoryRef, firestoreGetDocs, firestoreOnSnapshot, firestoreAddDoc, firestoreDeleteDoc, firestoreDoc, firestoreQuery, firestoreOrderBy, firestoreLimit, firestoreWhere, firestoreTimestamp;
     let hasAccess = false;
+    let accessType = '';
+    let lastHistoryAt = 0;
     const quill = new Quill('#editor', { theme: 'snow', placeholder: 'Escreva aqui. As alterações são sincronizadas automaticamente.', modules: { toolbar: '#toolbar', history: { delay: 500, maxStack: 100, userOnly: true } } });
     quill.disable();
 
@@ -99,6 +104,48 @@
     function getHTML() { return quill.getText().trim() ? quill.root.innerHTML : ''; }
     function setHTML(html) { quill.setContents([], 'silent'); quill.clipboard.dangerouslyPasteHTML(0, html || '', 'silent'); }
     function saveLocal() { localStorage.setItem(localKey, getHTML()); }
+    async function cleanCentralHistory() {
+      if (!centralMode || !centralHistoryRef) return;
+      const cutoff = firestoreTimestamp.fromDate(new Date(Date.now() - 12 * 60 * 60 * 1000));
+      const expired = await firestoreGetDocs(firestoreQuery(centralHistoryRef, firestoreWhere('createdAt', '<', cutoff)));
+      await Promise.all(expired.docs.map(item => firestoreDeleteDoc(item.ref)));
+    }
+    async function trimPermanentHistory() {
+      const records = await firestoreGetDocs(firestoreQuery(permanentHistoryRef, firestoreOrderBy('createdAt', 'desc'), firestoreLimit(100)));
+      await Promise.all(records.docs.slice(50).map(item => firestoreDeleteDoc(item.ref)));
+    }
+    async function saveHistoryVersion() {
+      if (!hasAccess || !getHTML()) return;
+      const now = Date.now();
+      if (now - lastHistoryAt < 60000) {
+        clearTimeout(historySaveTimer);
+        historySaveTimer = setTimeout(saveHistoryVersion, 60000 - (now - lastHistoryAt));
+        return;
+      }
+      lastHistoryAt = now;
+      const version = { html: getHTML(), createdAt: firestoreTimestamp.fromDate(new Date(now)) };
+      try {
+        await Promise.all([firestoreAddDoc(centralHistoryRef, version), firestoreAddDoc(permanentHistoryRef, version)]);
+        if (centralMode) await cleanCentralHistory();
+        if (now % (5 * 60 * 1000) < 60000) await trimPermanentHistory();
+      } catch (error) { console.error('Erro ao guardar histórico:', error); }
+    }
+    async function showHistory() {
+      const historyRef = centralMode ? centralHistoryRef : permanentHistoryRef;
+      const max = centralMode ? 720 : 50;
+      try {
+        const snapshot = await firestoreGetDocs(firestoreQuery(historyRef, firestoreOrderBy('createdAt', 'desc'), firestoreLimit(max)));
+        if (centralMode) await cleanCentralHistory();
+        const records = snapshot.docs.map(item => ({ id: item.id, ...item.data() })).filter(item => item.html && item.createdAt?.toDate?.() && (!centralMode || item.createdAt.toDate() >= new Date(Date.now() - 12 * 60 * 60 * 1000)));
+        if (!records.length) { alert('Ainda não existem versões no histórico.'); return; }
+        const choice = prompt(`${records.map((item, index) => `${index + 1}. ${item.createdAt.toDate().toLocaleString('pt-PT')} — ${item.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 55)}`).join('\n')}\n\nIndique o número da versão a restaurar (ou deixe vazio para fechar):`);
+        if (!choice) return;
+        const selected = records[Number(choice) - 1];
+        if (!selected) { alert('Seleção inválida.'); return; }
+        if (!confirm(`Restaurar a versão de ${selected.createdAt.toDate().toLocaleString('pt-PT')}?`)) return;
+        await window.restoreHistoryVersion(selected.html);
+      } catch (error) { console.error('Erro ao abrir histórico:', error); alert('Não foi possível abrir o histórico.'); }
+    }
     function updateAccessTime() {
       if (!hasAccess || centralMode) { accessTime.hidden = true; return; }
       accessTime.hidden = false;
@@ -111,9 +158,9 @@
       accessTime.textContent = `${hours}:${minutes}:${remainingSeconds}`;
     }
     function lockAccess(message = 'Código expirado — peça novo acesso à central.') {
-      hasAccess = false; accessExpiresAt = null; clearInterval(accessTimer); unsubscribeNotes?.(); unsubscribeNotes = null;
+      hasAccess = false; accessType = ''; accessExpiresAt = null; clearInterval(accessTimer); clearTimeout(historySaveTimer); unsubscribeNotes?.(); unsubscribeNotes = null;
       quill.disable(); setHTML(''); editorShell.hidden = true; gate.hidden = false; logoutButton.hidden = true;
-      accessTime.hidden = true;
+      accessTime.hidden = true; historyButton.hidden = true;
       accessMessage.textContent = message; setStatus('Acesso restrito'); sessionStorage.removeItem('cbsl_notes_access');
     }
     function startNotesListener() {
@@ -125,8 +172,8 @@
         setStatus(accessExpiresAt ? 'Acesso temporário ativo' : 'Sincronizado', 'online');
       }, () => setStatus('Sem acesso à sincronização', 'error'));
     }
-    function grantAccess(label, expiry = null) {
-      hasAccess = true; accessExpiresAt = expiry; gate.hidden = true; editorShell.hidden = false; quill.enable(); logoutButton.hidden = centralMode; startNotesListener();
+    function grantAccess(label, expiry = null, type = 'temporary') {
+      hasAccess = true; accessType = type; accessExpiresAt = expiry; gate.hidden = true; editorShell.hidden = false; quill.enable(); logoutButton.hidden = centralMode; historyButton.hidden = !(centralMode || type === 'permanent'); startNotesListener();
       clearInterval(accessTimer); updateAccessTime();
       if (expiry) { accessTimer = setInterval(updateAccessTime, 1000); setTimeout(() => lockAccess(), Math.max(1000, expiry.getTime() - Date.now() + 200)); }
       setStatus(label, 'online');
@@ -134,34 +181,41 @@
     async function validateAccess(rawCode, silent = false) {
       const code = rawCode.trim().toLowerCase();
       if (!code) { if (!silent) accessMessage.textContent = 'Introduza um código.'; return; }
-      if (centralMode) { grantAccess('Central'); return; }
-      if (permanentAccessCodes.has(code)) { sessionStorage.setItem('cbsl_notes_access', code); grantAccess('Acesso permanente'); return; }
+      if (centralMode) { grantAccess('Central', null, 'central'); return; }
+      if (permanentAccessCodes.has(code)) { sessionStorage.setItem('cbsl_notes_access', code); grantAccess('Acesso permanente', null, 'permanent'); return; }
       const snapshot = await firestoreGetDocs(codesRef);
       const active = snapshot.docs.map(item => item.data()).find(item => item.code === code && item.expiresAt?.toDate?.() > new Date());
       if (!active) { if (!silent) accessMessage.textContent = 'Código inválido ou expirado.'; return; }
-      const expiry = active.expiresAt.toDate(); sessionStorage.setItem('cbsl_notes_access', code); grantAccess('Acesso temporário', expiry);
+      const expiry = active.expiresAt.toDate(); sessionStorage.setItem('cbsl_notes_access', code); grantAccess('Acesso temporário', expiry, 'temporary');
     }
 
     document.getElementById('unlock-notes').addEventListener('click', () => validateAccess(codeInput.value));
     codeInput.addEventListener('keydown', event => { if (event.key === 'Enter') validateAccess(codeInput.value); });
     logoutButton.addEventListener('click', () => lockAccess('Sessão terminada. Introduza um código para voltar a entrar.'));
+    historyButton.addEventListener('click', showHistory);
     document.getElementById('clear-notes').addEventListener('click', () => { if (hasAccess && confirm('Apagar todas as notas partilhadas?')) { quill.setText(''); saveLocal(); window.syncSharedNotes?.(); } });
     quill.on('text-change', (delta, oldDelta, source) => { if (source === 'user' && hasAccess) { saveLocal(); window.syncSharedNotes?.(); } });
 
     try {
-      const [{ initializeApp }, { getAnalytics }, { getFirestore, doc, collection, getDocs, onSnapshot, setDoc, serverTimestamp }] = await Promise.all([
+      const [{ initializeApp }, { getAnalytics }, { getFirestore, doc, collection, getDocs, onSnapshot, setDoc, addDoc, deleteDoc, query, orderBy, limit, where, Timestamp, serverTimestamp }] = await Promise.all([
         import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js'),
         import('https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js'),
         import('https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js')
       ]);
       const app = initializeApp(firebaseConfig); try { getAnalytics(app); } catch (error) { console.warn('Analytics indisponível:', error); }
-      db = getFirestore(app); firestoreGetDocs = getDocs; firestoreOnSnapshot = onSnapshot;
+      db = getFirestore(app); firestoreGetDocs = getDocs; firestoreOnSnapshot = onSnapshot; firestoreAddDoc = addDoc; firestoreDeleteDoc = deleteDoc; firestoreDoc = doc; firestoreQuery = query; firestoreOrderBy = orderBy; firestoreLimit = limit; firestoreWhere = where; firestoreTimestamp = Timestamp;
       notesRef = doc(db, 'notasPartilhadas', sharedDocumentId); codesRef = collection(db, 'codigosTemporariosNotas');
+      centralHistoryRef = collection(db, 'historicoCentralNotas'); permanentHistoryRef = collection(db, 'historicoPermanenteNotas');
       window.syncSharedNotes = () => {
         if (!hasAccess) return; clearTimeout(saveTimer); setStatus('A guardar…');
-        saveTimer = setTimeout(async () => { try { await setDoc(notesRef, { html: getHTML(), updatedAt: serverTimestamp() }, { merge: true }); } catch (error) { console.error('Erro ao guardar notas:', error); setStatus('Erro ao sincronizar', 'error'); } }, 550);
+        saveTimer = setTimeout(async () => { try { await setDoc(notesRef, { html: getHTML(), updatedAt: serverTimestamp() }, { merge: true }); await saveHistoryVersion(); } catch (error) { console.error('Erro ao guardar notas:', error); setStatus('Erro ao sincronizar', 'error'); } }, 550);
       };
-      if (centralMode) grantAccess('Central');
+      window.restoreHistoryVersion = async html => {
+        if (!hasAccess || !(centralMode || accessType === 'permanent')) return;
+        await setDoc(notesRef, { html, updatedAt: serverTimestamp() }, { merge: true });
+        setHTML(html); saveLocal(); setStatus('Versão restaurada', 'online');
+      };
+      if (centralMode) { grantAccess('Central', null, 'central'); cleanCentralHistory(); historyTimer = setInterval(cleanCentralHistory, 5 * 60 * 1000); }
       else { setStatus('Introduza o código'); const savedCode = sessionStorage.getItem('cbsl_notes_access'); if (savedCode) validateAccess(savedCode, true); }
     } catch (error) { console.error('Não foi possível iniciar a sincronização:', error); setStatus('Sincronização indisponível', 'error'); accessMessage.textContent = 'Não foi possível validar o acesso.'; }
   </script>
