@@ -14,6 +14,7 @@
     #sync-status { margin-left:auto; font-size:.62rem; color:#cbd5e1; white-space:nowrap; }
     #sync-status.online { color:#86efac; }
     #sync-status.error { color:#fca5a5; }
+    #access-time { color:#facc15; font:700 .62rem 'Courier New', monospace; white-space:nowrap; }
     #logout-notes { border:1px solid #64748b; border-radius:3px; padding:2px 5px; color:#e2e8f0; background:transparent; font-size:.6rem; font-weight:700; cursor:pointer; }
     #toolbar { padding:6px 8px; background:#e2e8f0; border:0; border-bottom:1px solid var(--line); }
     .ql-snow.ql-toolbar button:hover, .ql-snow.ql-toolbar button.ql-active, .ql-snow .ql-picker-label:hover, .ql-snow .ql-picker-label.ql-active { color:var(--blue); }
@@ -39,6 +40,7 @@
   <header>
     <h1>NOTAS PARTILHADAS</h1>
     <span id="sync-status">A preparar sincronização…</span>
+    <span id="access-time" hidden></span>
     <button id="logout-notes" type="button" hidden>SAIR</button>
   </header>
   <section id="access-gate" aria-label="Acesso às notas">
@@ -83,10 +85,11 @@
     const gate = document.getElementById('access-gate');
     const editorShell = document.getElementById('editor-shell');
     const logoutButton = document.getElementById('logout-notes');
+    const accessTime = document.getElementById('access-time');
     const codeInput = document.getElementById('access-code');
     const accessMessage = document.getElementById('access-message');
     const localKey = 'cbsl_notas_partilhadas_v1';
-    let saveTimer, accessExpiresAt, unsubscribeNotes, db, notesRef, codesRef, firestoreGetDocs, firestoreOnSnapshot;
+    let saveTimer, accessTimer, accessExpiresAt, unsubscribeNotes, db, notesRef, codesRef, firestoreGetDocs, firestoreOnSnapshot;
     let hasAccess = false;
     const quill = new Quill('#editor', { theme: 'snow', placeholder: 'Escreva aqui. As alterações são sincronizadas automaticamente.', modules: { toolbar: '#toolbar', history: { delay: 500, maxStack: 100, userOnly: true } } });
     quill.disable();
@@ -96,9 +99,21 @@
     function getHTML() { return quill.getText().trim() ? quill.root.innerHTML : ''; }
     function setHTML(html) { quill.setContents([], 'silent'); quill.clipboard.dangerouslyPasteHTML(0, html || '', 'silent'); }
     function saveLocal() { localStorage.setItem(localKey, getHTML()); }
+    function updateAccessTime() {
+      if (!hasAccess || centralMode) { accessTime.hidden = true; return; }
+      accessTime.hidden = false;
+      if (!accessExpiresAt) { accessTime.textContent = 'PERMANENTE'; return; }
+      const seconds = Math.max(0, Math.ceil((accessExpiresAt.getTime() - Date.now()) / 1000));
+      if (seconds === 0) { lockAccess(); return; }
+      const hours = String(Math.floor(seconds / 3600)).padStart(2, '0');
+      const minutes = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
+      const remainingSeconds = String(seconds % 60).padStart(2, '0');
+      accessTime.textContent = `${hours}:${minutes}:${remainingSeconds}`;
+    }
     function lockAccess(message = 'Código expirado — peça novo acesso à central.') {
-      hasAccess = false; accessExpiresAt = null; unsubscribeNotes?.(); unsubscribeNotes = null;
+      hasAccess = false; accessExpiresAt = null; clearInterval(accessTimer); unsubscribeNotes?.(); unsubscribeNotes = null;
       quill.disable(); setHTML(''); editorShell.hidden = true; gate.hidden = false; logoutButton.hidden = true;
+      accessTime.hidden = true;
       accessMessage.textContent = message; setStatus('Acesso restrito'); sessionStorage.removeItem('cbsl_notes_access');
     }
     function startNotesListener() {
@@ -112,7 +127,8 @@
     }
     function grantAccess(label, expiry = null) {
       hasAccess = true; accessExpiresAt = expiry; gate.hidden = true; editorShell.hidden = false; quill.enable(); logoutButton.hidden = centralMode; startNotesListener();
-      if (expiry) setTimeout(() => lockAccess(), Math.max(1000, expiry.getTime() - Date.now() + 200));
+      clearInterval(accessTimer); updateAccessTime();
+      if (expiry) { accessTimer = setInterval(updateAccessTime, 1000); setTimeout(() => lockAccess(), Math.max(1000, expiry.getTime() - Date.now() + 200)); }
       setStatus(label, 'online');
     }
     async function validateAccess(rawCode, silent = false) {
