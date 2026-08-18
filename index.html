@@ -4,19 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Notas Operacionais</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css">
   <style>
     :root { color-scheme: light; --ink:#1e293b; --muted:#64748b; --line:#cbd5e1; --blue:#2563eb; --red:#dc2626; }
     * { box-sizing: border-box; }
     body { margin:0; min-height:100vh; display:flex; flex-direction:column; background:#f8fafc; color:var(--ink); font-family:"Segoe UI",Roboto,sans-serif; }
-    header { min-height:50px; display:flex; align-items:center; gap:12px; padding:10px 14px; color:white; background:#1e293b; border-bottom:2px solid #334155; }
+    header { min-height:44px; display:flex; align-items:center; gap:12px; padding:8px 12px; color:white; background:#1e293b; border-bottom:2px solid #334155; }
     h1 { margin:0; font-size:0.85rem; letter-spacing:.04em; }
     #sync-status { margin-left:auto; font-size:.72rem; color:#cbd5e1; white-space:nowrap; }
     #sync-status.online { color:#86efac; }
     #sync-status.error { color:#fca5a5; }
-    main { flex:1; min-height:0; display:flex; padding:0; }
-    #editor { flex:1; width:100%; min-height:260px; padding:16px; border:0; resize:none; outline:0; color:var(--ink); background:white; font:18px/1.5 "Segoe UI",Roboto,sans-serif; }
-    footer { display:flex; align-items:center; padding:8px 12px; border-top:1px solid var(--line); background:#f8fafc; }
-    button { margin-left:auto; border:0; border-radius:4px; padding:6px 9px; color:white; background:var(--red); font-size:.72rem; font-weight:700; cursor:pointer; }
+    #toolbar { padding:6px 8px; background:#e2e8f0; border:0; border-bottom:1px solid var(--line); }
+    .ql-snow.ql-toolbar button:hover, .ql-snow.ql-toolbar button.ql-active, .ql-snow .ql-picker-label:hover, .ql-snow .ql-picker-label.ql-active { color:var(--blue); }
+    main { flex:1; min-height:0; display:flex; padding:0; overflow:hidden; }
+    #editor { flex:1; min-width:0; min-height:260px; border:0; }
+    #editor.ql-container { height:100%; border:0; font:18px/1.5 "Segoe UI",Roboto,sans-serif; }
+    #editor .ql-editor { height:100%; overflow-y:auto; padding:16px; color:var(--ink); }
+    footer { display:flex; align-items:center; padding:7px 12px; border-top:1px solid var(--line); background:#f8fafc; }
+    #clear-notes { margin-left:auto; border:0; border-radius:4px; padding:6px 9px; color:white; background:var(--red); font-size:.72rem; font-weight:700; cursor:pointer; }
     button:hover { filter:brightness(1.1); }
   </style>
 </head>
@@ -25,10 +30,19 @@
     <h1>NOTAS PARTILHADAS</h1>
     <span id="sync-status">A preparar sincronização…</span>
   </header>
+  <div id="toolbar" aria-label="Ferramentas de formatação">
+    <span class="ql-formats"><select class="ql-font"></select><select class="ql-size"></select></span>
+    <span class="ql-formats"><button class="ql-bold" title="Negrito"></button><button class="ql-italic" title="Itálico"></button><button class="ql-underline" title="Sublinhado"></button><button class="ql-strike" title="Riscado"></button></span>
+    <span class="ql-formats"><select class="ql-color" title="Cor do texto"></select><select class="ql-background" title="Cor de fundo"></select></span>
+    <span class="ql-formats"><button class="ql-list" value="ordered" title="Lista numerada"></button><button class="ql-list" value="bullet" title="Lista com pontos"></button><select class="ql-align" title="Alinhamento"></select></span>
+    <span class="ql-formats"><button class="ql-clean" title="Remover formatação"></button></span>
+  </div>
   <main>
-    <textarea id="editor" aria-label="Notas partilhadas" placeholder="Escreva aqui. As alterações são sincronizadas automaticamente." spellcheck="true"></textarea>
+    <div id="editor" aria-label="Notas partilhadas"></div>
   </main>
   <footer><button id="clear-notes" type="button">APAGAR TUDO</button></footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
 
   <script type="module">
     /*
@@ -50,19 +64,45 @@
     const status = document.getElementById('sync-status');
     const localKey = 'cbsl_notas_partilhadas_v1';
     let saveTimer;
+    const quill = new Quill('#editor', {
+      theme: 'snow',
+      placeholder: 'Escreva aqui. As alterações são sincronizadas automaticamente.',
+      modules: {
+        toolbar: '#toolbar',
+        history: { delay: 500, maxStack: 100, userOnly: true }
+      }
+    });
 
     function setStatus(message, type = '') {
       status.textContent = message;
       status.className = type;
     }
 
-    function saveLocal() { localStorage.setItem(localKey, editor.value); }
-    editor.value = localStorage.getItem(localKey) || '';
+    function escapeHTML(text) {
+      const element = document.createElement('div');
+      element.textContent = text;
+      return element.innerHTML.replace(/\n/g, '<br>');
+    }
+    function getHTML() { return quill.getText().trim() ? quill.root.innerHTML : ''; }
+    function setHTML(html) {
+      quill.setContents([], 'silent');
+      quill.clipboard.dangerouslyPasteHTML(0, html || '', 'silent');
+    }
+    function saveLocal() { localStorage.setItem(localKey, getHTML()); }
+    setHTML(localStorage.getItem(localKey) || '');
 
     document.getElementById('clear-notes').addEventListener('click', () => {
       if (!confirm('Apagar todas as notas partilhadas?')) return;
-      editor.value = '';
-      editor.dispatchEvent(new Event('input'));
+      quill.setText('');
+      saveLocal();
+      window.syncSharedNotes?.();
+    });
+
+    // A cópia local é sempre mantida, mesmo antes de configurar o Firebase.
+    quill.on('text-change', (delta, oldDelta, source) => {
+      if (source !== 'user') return;
+      saveLocal();
+      window.syncSharedNotes?.();
     });
 
     if (firebaseConfig.apiKey.startsWith('COLOQUE_AQUI')) {
@@ -76,25 +116,25 @@
         const db = getFirestore(initializeApp(firebaseConfig));
         const notesRef = doc(db, 'notasPartilhadas', sharedDocumentId);
 
-        editor.addEventListener('input', () => {
-          saveLocal();
+        window.syncSharedNotes = () => {
           clearTimeout(saveTimer);
           setStatus('A guardar…');
           saveTimer = setTimeout(async () => {
             try {
-              await setDoc(notesRef, { text: editor.value, updatedAt: serverTimestamp() }, { merge:true });
+              await setDoc(notesRef, { html: getHTML(), updatedAt: serverTimestamp() }, { merge:true });
               setStatus('Sincronizado', 'online');
             } catch (error) {
               console.error('Erro ao guardar notas:', error);
               setStatus('Erro ao sincronizar — guardado localmente', 'error');
             }
           }, 550);
-        });
+        };
 
         onSnapshot(notesRef, snapshot => {
-          const text = snapshot.exists() ? snapshot.data().text : '';
-          if (typeof text === 'string' && text !== editor.value) {
-            editor.value = text;
+          const data = snapshot.exists() ? snapshot.data() : {};
+          const html = typeof data.html === 'string' ? data.html : (typeof data.text === 'string' ? escapeHTML(data.text) : '');
+          if (html !== getHTML()) {
+            setHTML(html);
             saveLocal();
           }
           setStatus('Sincronizado', 'online');
