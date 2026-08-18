@@ -29,6 +29,7 @@
     #access-gate { flex:1; display:flex; align-items:center; justify-content:center; padding:18px; background:#f8fafc; }
     .access-card { width:min(360px, 100%); padding:20px; border:1px solid var(--line); border-radius:8px; background:white; text-align:center; box-shadow:0 3px 12px rgba(15,23,42,.08); }
     .access-card h2 { margin:0 0 7px; font-size:1rem; }
+    .access-brand { display:block; margin-bottom:8px; font-size:1.15rem; letter-spacing:.08em; }
     .access-card p { margin:0 0 15px; color:var(--muted); font-size:.82rem; }
     #access-code { width:145px; padding:9px; border:1px solid #94a3b8; border-radius:5px; text-align:center; text-transform:uppercase; font:700 1.1rem 'Courier New', monospace; letter-spacing:.1em; }
     #unlock-notes { margin:8px 0 0 6px; border:0; border-radius:5px; padding:10px 12px; color:white; background:var(--blue); font-weight:700; cursor:pointer; }
@@ -47,6 +48,7 @@
   </header>
   <section id="access-gate" aria-label="Acesso às notas">
     <div class="access-card">
+      <strong class="access-brand">CBSL</strong>
       <h2>Acesso restrito</h2>
       <p>Peça um código à central para ver e editar as notas.</p>
       <input id="access-code" type="text" inputmode="text" autocomplete="off" maxlength="12" placeholder="CÓDIGO" aria-label="Código de acesso">
