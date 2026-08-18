@@ -23,6 +23,15 @@
     footer { display:flex; align-items:center; padding:7px 12px; border-top:1px solid var(--line); background:#f8fafc; }
     #clear-notes { margin-left:auto; border:0; border-radius:4px; padding:6px 9px; color:white; background:var(--red); font-size:.72rem; font-weight:700; cursor:pointer; }
     button:hover { filter:brightness(1.1); }
+    #access-gate { flex:1; display:flex; align-items:center; justify-content:center; padding:18px; background:#f8fafc; }
+    .access-card { width:min(360px, 100%); padding:20px; border:1px solid var(--line); border-radius:8px; background:white; text-align:center; box-shadow:0 3px 12px rgba(15,23,42,.08); }
+    .access-card h2 { margin:0 0 7px; font-size:1rem; }
+    .access-card p { margin:0 0 15px; color:var(--muted); font-size:.82rem; }
+    #access-code { width:145px; padding:9px; border:1px solid #94a3b8; border-radius:5px; text-align:center; text-transform:uppercase; font:700 1.1rem 'Courier New', monospace; letter-spacing:.1em; }
+    #unlock-notes { margin:8px 0 0 6px; border:0; border-radius:5px; padding:10px 12px; color:white; background:var(--blue); font-weight:700; cursor:pointer; }
+    #access-message { min-height:18px; margin:10px 0 0; color:var(--red); font-size:.72rem; }
+    #editor-shell { flex:1; min-height:0; display:flex; flex-direction:column; }
+    #editor-shell[hidden], #access-gate[hidden] { display:none; }
   </style>
 </head>
 <body>
@@ -30,17 +39,28 @@
     <h1>NOTAS PARTILHADAS</h1>
     <span id="sync-status">A preparar sincronização…</span>
   </header>
-  <div id="toolbar" aria-label="Ferramentas de formatação">
-    <span class="ql-formats"><select class="ql-font"></select><select class="ql-size"></select></span>
-    <span class="ql-formats"><button class="ql-bold" title="Negrito"></button><button class="ql-italic" title="Itálico"></button><button class="ql-underline" title="Sublinhado"></button><button class="ql-strike" title="Riscado"></button></span>
-    <span class="ql-formats"><select class="ql-color" title="Cor do texto"></select><select class="ql-background" title="Cor de fundo"></select></span>
-    <span class="ql-formats"><button class="ql-list" value="ordered" title="Lista numerada"></button><button class="ql-list" value="bullet" title="Lista com pontos"></button><select class="ql-align" title="Alinhamento"></select></span>
-    <span class="ql-formats"><button class="ql-clean" title="Remover formatação"></button></span>
-  </div>
-  <main>
-    <div id="editor" aria-label="Notas partilhadas"></div>
-  </main>
-  <footer><button id="clear-notes" type="button">APAGAR TUDO</button></footer>
+  <section id="access-gate" aria-label="Acesso às notas">
+    <div class="access-card">
+      <h2>Acesso restrito</h2>
+      <p>Peça um código à central para ver e editar as notas.</p>
+      <input id="access-code" type="text" inputmode="text" autocomplete="off" maxlength="12" placeholder="CÓDIGO" aria-label="Código de acesso">
+      <button id="unlock-notes" type="button">ENTRAR</button>
+      <p id="access-message" role="status"></p>
+    </div>
+  </section>
+  <section id="editor-shell" hidden>
+    <div id="toolbar" aria-label="Ferramentas de formatação">
+      <span class="ql-formats"><select class="ql-font"></select><select class="ql-size"></select></span>
+      <span class="ql-formats"><button class="ql-bold" title="Negrito"></button><button class="ql-italic" title="Itálico"></button><button class="ql-underline" title="Sublinhado"></button><button class="ql-strike" title="Riscado"></button></span>
+      <span class="ql-formats"><select class="ql-color" title="Cor do texto"></select><select class="ql-background" title="Cor de fundo"></select></span>
+      <span class="ql-formats"><button class="ql-list" value="ordered" title="Lista numerada"></button><button class="ql-list" value="bullet" title="Lista com pontos"></button><select class="ql-align" title="Alinhamento"></select></span>
+      <span class="ql-formats"><button class="ql-clean" title="Remover formatação"></button></span>
+    </div>
+    <main>
+      <div id="editor" aria-label="Notas partilhadas"></div>
+    </main>
+    <footer><button id="clear-notes" type="button">APAGAR TUDO</button></footer>
+  </section>
 
   <script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
 
@@ -54,95 +74,76 @@
       appId: "1:574613777086:web:2e0ea3cefac558399a8cef",
       measurementId: "G-T597X3R3S7"
     };
-
-    // Não altere este valor se quiser que todos os dispositivos vejam as mesmas notas.
-    const sharedDocumentId = "notas-operacionais-principais";
-    const editor = document.getElementById('editor');
+    const permanentAccessCodes = new Set(['cbslcmdt', 'cbsladmin', 'cbsljp', 'cbslmiguel']);
+    const centralMode = new URLSearchParams(location.search).get('central') === '1';
+    const sharedDocumentId = 'notas-operacionais-principais';
     const status = document.getElementById('sync-status');
+    const gate = document.getElementById('access-gate');
+    const editorShell = document.getElementById('editor-shell');
+    const codeInput = document.getElementById('access-code');
+    const accessMessage = document.getElementById('access-message');
     const localKey = 'cbsl_notas_partilhadas_v1';
-    let saveTimer;
-    const quill = new Quill('#editor', {
-      theme: 'snow',
-      placeholder: 'Escreva aqui. As alterações são sincronizadas automaticamente.',
-      modules: {
-        toolbar: '#toolbar',
-        history: { delay: 500, maxStack: 100, userOnly: true }
-      }
-    });
+    let saveTimer, accessExpiresAt, unsubscribeNotes, db, notesRef, codesRef, firestoreGetDocs, firestoreOnSnapshot;
+    let hasAccess = false;
+    const quill = new Quill('#editor', { theme: 'snow', placeholder: 'Escreva aqui. As alterações são sincronizadas automaticamente.', modules: { toolbar: '#toolbar', history: { delay: 500, maxStack: 100, userOnly: true } } });
+    quill.disable();
 
-    function setStatus(message, type = '') {
-      status.textContent = message;
-      status.className = type;
-    }
-
-    function escapeHTML(text) {
-      const element = document.createElement('div');
-      element.textContent = text;
-      return element.innerHTML.replace(/\n/g, '<br>');
-    }
+    function setStatus(message, type = '') { status.textContent = message; status.className = type; }
+    function escapeHTML(text) { const element = document.createElement('div'); element.textContent = text; return element.innerHTML.replace(/\n/g, '<br>'); }
     function getHTML() { return quill.getText().trim() ? quill.root.innerHTML : ''; }
-    function setHTML(html) {
-      quill.setContents([], 'silent');
-      quill.clipboard.dangerouslyPasteHTML(0, html || '', 'silent');
-    }
+    function setHTML(html) { quill.setContents([], 'silent'); quill.clipboard.dangerouslyPasteHTML(0, html || '', 'silent'); }
     function saveLocal() { localStorage.setItem(localKey, getHTML()); }
-    setHTML(localStorage.getItem(localKey) || '');
+    function lockAccess(message = 'Código expirado — peça novo acesso à central.') {
+      hasAccess = false; accessExpiresAt = null; unsubscribeNotes?.(); unsubscribeNotes = null;
+      quill.disable(); setHTML(''); editorShell.hidden = true; gate.hidden = false;
+      accessMessage.textContent = message; setStatus('Acesso restrito'); sessionStorage.removeItem('cbsl_notes_access');
+    }
+    function startNotesListener() {
+      if (unsubscribeNotes) return;
+      unsubscribeNotes = firestoreOnSnapshot(notesRef, snapshot => {
+        const data = snapshot.exists() ? snapshot.data() : {};
+        const html = typeof data.html === 'string' ? data.html : (typeof data.text === 'string' ? escapeHTML(data.text) : '');
+        if (html !== getHTML()) { setHTML(html); saveLocal(); }
+        setStatus(accessExpiresAt ? 'Acesso temporário ativo' : 'Sincronizado', 'online');
+      }, () => setStatus('Sem acesso à sincronização', 'error'));
+    }
+    function grantAccess(label, expiry = null) {
+      hasAccess = true; accessExpiresAt = expiry; gate.hidden = true; editorShell.hidden = false; quill.enable(); startNotesListener();
+      if (expiry) setTimeout(() => lockAccess(), Math.max(1000, expiry.getTime() - Date.now() + 200));
+      setStatus(label, 'online');
+    }
+    async function validateAccess(rawCode, silent = false) {
+      const code = rawCode.trim().toLowerCase();
+      if (!code) { if (!silent) accessMessage.textContent = 'Introduza um código.'; return; }
+      if (centralMode) { grantAccess('Central'); return; }
+      if (permanentAccessCodes.has(code)) { sessionStorage.setItem('cbsl_notes_access', code); grantAccess('Acesso permanente'); return; }
+      const snapshot = await firestoreGetDocs(codesRef);
+      const active = snapshot.docs.map(item => item.data()).find(item => item.code === code && item.expiresAt?.toDate?.() > new Date());
+      if (!active) { if (!silent) accessMessage.textContent = 'Código inválido ou expirado.'; return; }
+      const expiry = active.expiresAt.toDate(); sessionStorage.setItem('cbsl_notes_access', code); grantAccess('Acesso temporário', expiry);
+    }
 
-    document.getElementById('clear-notes').addEventListener('click', () => {
-      if (!confirm('Apagar todas as notas partilhadas?')) return;
-      quill.setText('');
-      saveLocal();
-      window.syncSharedNotes?.();
-    });
-
-    // A cópia local é sempre mantida, mesmo antes de configurar o Firebase.
-    quill.on('text-change', (delta, oldDelta, source) => {
-      if (source !== 'user') return;
-      saveLocal();
-      window.syncSharedNotes?.();
-    });
+    document.getElementById('unlock-notes').addEventListener('click', () => validateAccess(codeInput.value));
+    codeInput.addEventListener('keydown', event => { if (event.key === 'Enter') validateAccess(codeInput.value); });
+    document.getElementById('clear-notes').addEventListener('click', () => { if (hasAccess && confirm('Apagar todas as notas partilhadas?')) { quill.setText(''); saveLocal(); window.syncSharedNotes?.(); } });
+    quill.on('text-change', (delta, oldDelta, source) => { if (source === 'user' && hasAccess) { saveLocal(); window.syncSharedNotes?.(); } });
 
     try {
-        const [{ initializeApp }, { getAnalytics }, { getFirestore, doc, onSnapshot, setDoc, serverTimestamp }] = await Promise.all([
-          import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js'),
-          import('https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js'),
-          import('https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js')
-        ]);
-        const app = initializeApp(firebaseConfig);
-        try { getAnalytics(app); } catch (error) { console.warn('Analytics indisponível:', error); }
-        const db = getFirestore(app);
-        const notesRef = doc(db, 'notasPartilhadas', sharedDocumentId);
-
-        window.syncSharedNotes = () => {
-          clearTimeout(saveTimer);
-          setStatus('A guardar…');
-          saveTimer = setTimeout(async () => {
-            try {
-              await setDoc(notesRef, { html: getHTML(), updatedAt: serverTimestamp() }, { merge:true });
-              setStatus('Sincronizado', 'online');
-            } catch (error) {
-              console.error('Erro ao guardar notas:', error);
-              setStatus('Erro ao sincronizar — guardado localmente', 'error');
-            }
-          }, 550);
-        };
-
-        onSnapshot(notesRef, snapshot => {
-          const data = snapshot.exists() ? snapshot.data() : {};
-          const html = typeof data.html === 'string' ? data.html : (typeof data.text === 'string' ? escapeHTML(data.text) : '');
-          if (html !== getHTML()) {
-            setHTML(html);
-            saveLocal();
-          }
-          setStatus('Sincronizado', 'online');
-        }, error => {
-          console.error('Erro ao receber notas:', error);
-          setStatus('Sem acesso à sincronização', 'error');
-        });
-    } catch (error) {
-      console.error('Não foi possível iniciar a sincronização:', error);
-      setStatus('Sincronização indisponível', 'error');
-    }
+      const [{ initializeApp }, { getAnalytics }, { getFirestore, doc, collection, getDocs, onSnapshot, setDoc, serverTimestamp }] = await Promise.all([
+        import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js'),
+        import('https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js')
+      ]);
+      const app = initializeApp(firebaseConfig); try { getAnalytics(app); } catch (error) { console.warn('Analytics indisponível:', error); }
+      db = getFirestore(app); firestoreGetDocs = getDocs; firestoreOnSnapshot = onSnapshot;
+      notesRef = doc(db, 'notasPartilhadas', sharedDocumentId); codesRef = collection(db, 'codigosTemporariosNotas');
+      window.syncSharedNotes = () => {
+        if (!hasAccess) return; clearTimeout(saveTimer); setStatus('A guardar…');
+        saveTimer = setTimeout(async () => { try { await setDoc(notesRef, { html: getHTML(), updatedAt: serverTimestamp() }, { merge: true }); } catch (error) { console.error('Erro ao guardar notas:', error); setStatus('Erro ao sincronizar', 'error'); } }, 550);
+      };
+      if (centralMode) grantAccess('Central');
+      else { setStatus('Introduza o código'); const savedCode = sessionStorage.getItem('cbsl_notes_access'); if (savedCode) validateAccess(savedCode, true); }
+    } catch (error) { console.error('Não foi possível iniciar a sincronização:', error); setStatus('Sincronização indisponível', 'error'); accessMessage.textContent = 'Não foi possível validar o acesso.'; }
   </script>
 </body>
 </html>
