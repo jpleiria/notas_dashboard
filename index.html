@@ -138,12 +138,34 @@
         if (centralMode) await cleanCentralHistory();
         const records = snapshot.docs.map(item => ({ id: item.id, ...item.data() })).filter(item => item.html && item.createdAt?.toDate?.() && (!centralMode || item.createdAt.toDate() >= new Date(Date.now() - 12 * 60 * 60 * 1000)));
         if (!records.length) { alert('Ainda não existem versões no histórico.'); return; }
-        const choice = prompt(`${records.map((item, index) => `${index + 1}. ${item.createdAt.toDate().toLocaleString('pt-PT')} — ${item.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 55)}`).join('\n')}\n\nIndique o número da versão a restaurar (ou deixe vazio para fechar):`);
+        const canDelete = accessType === 'permanent';
+        const instruction = canDelete
+          ? 'Use R+número para restaurar, A+número para apagar uma versão, ou T para apagar todo o histórico.'
+          : 'Use R+número para restaurar uma versão.';
+        const choice = prompt(`${records.map((item, index) => `${index + 1}. ${item.createdAt.toDate().toLocaleString('pt-PT')} — ${item.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 55)}`).join('\n')}\n\n${instruction}`);
         if (!choice) return;
-        const selected = records[Number(choice) - 1];
+        const command = choice.trim().toUpperCase();
+        if (canDelete && command === 'T') {
+          if (!confirm('Apagar todo o histórico permanente e o histórico das últimas 12 horas da central?')) return;
+          const [permanent, central] = await Promise.all([firestoreGetDocs(permanentHistoryRef), firestoreGetDocs(centralHistoryRef)]);
+          await Promise.all([...permanent.docs, ...central.docs].map(item => firestoreDeleteDoc(item.ref)));
+          alert('Histórico apagado. A nota atual não foi alterada.');
+          return;
+        }
+        const match = command.match(/^([RA])(\d+)$/);
+        if (!match) { alert('Seleção inválida.'); return; }
+        const selected = records[Number(match[2]) - 1];
         if (!selected) { alert('Seleção inválida.'); return; }
-        if (!confirm(`Restaurar a versão de ${selected.createdAt.toDate().toLocaleString('pt-PT')}?`)) return;
-        await window.restoreHistoryVersion(selected.html);
+        if (match[1] === 'R') {
+          if (!confirm(`Restaurar a versão de ${selected.createdAt.toDate().toLocaleString('pt-PT')}?`)) return;
+          await window.restoreHistoryVersion(selected.html);
+          return;
+        }
+        if (!canDelete) { alert('Sem permissão para apagar histórico.'); return; }
+        if (!confirm(`Apagar a versão de ${selected.createdAt.toDate().toLocaleString('pt-PT')}?`)) return;
+        const centralMatches = await firestoreGetDocs(firestoreQuery(centralHistoryRef, firestoreWhere('createdAt', '==', selected.createdAt)));
+        await Promise.all([firestoreDeleteDoc(firestoreDoc(permanentHistoryRef, selected.id)), ...centralMatches.docs.map(item => firestoreDeleteDoc(item.ref))]);
+        alert('Versão apagada do histórico. A nota atual não foi alterada.');
       } catch (error) { console.error('Erro ao abrir histórico:', error); alert('Não foi possível abrir o histórico.'); }
     }
     function updateAccessTime() {
