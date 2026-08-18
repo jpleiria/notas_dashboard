@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notas Operacionais</title>
+  <style>
+    :root { color-scheme: light; --ink:#1e293b; --muted:#64748b; --line:#cbd5e1; --blue:#2563eb; --red:#dc2626; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:flex; flex-direction:column; background:#f8fafc; color:var(--ink); font-family:"Segoe UI",Roboto,sans-serif; }
+    header { min-height:50px; display:flex; align-items:center; gap:12px; padding:10px 14px; color:white; background:#1e293b; border-bottom:2px solid #334155; }
+    h1 { margin:0; font-size:0.85rem; letter-spacing:.04em; }
+    #sync-status { margin-left:auto; font-size:.72rem; color:#cbd5e1; white-space:nowrap; }
+    #sync-status.online { color:#86efac; }
+    #sync-status.error { color:#fca5a5; }
+    main { flex:1; min-height:0; display:flex; padding:0; }
+    #editor { flex:1; width:100%; min-height:260px; padding:16px; border:0; resize:none; outline:0; color:var(--ink); background:white; font:18px/1.5 "Segoe UI",Roboto,sans-serif; }
+    footer { display:flex; align-items:center; padding:8px 12px; border-top:1px solid var(--line); background:#f8fafc; }
+    button { margin-left:auto; border:0; border-radius:4px; padding:6px 9px; color:white; background:var(--red); font-size:.72rem; font-weight:700; cursor:pointer; }
+    button:hover { filter:brightness(1.1); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>NOTAS PARTILHADAS</h1>
+    <span id="sync-status">A preparar sincronização…</span>
+  </header>
+  <main>
+    <textarea id="editor" aria-label="Notas partilhadas" placeholder="Escreva aqui. As alterações são sincronizadas automaticamente." spellcheck="true"></textarea>
+  </main>
+  <footer><button id="clear-notes" type="button">APAGAR TUDO</button></footer>
+
+  <script type="module">
+    /*
+      Configure apenas este site com os dados do seu projeto Firebase.
+      Firebase Console > Project settings > Your apps > Web app.
+    */
+    const firebaseConfig = {
+      apiKey: "COLOQUE_AQUI_A_API_KEY",
+      authDomain: "COLOQUE_AQUI_O_PROJECT_ID.firebaseapp.com",
+      projectId: "COLOQUE_AQUI_O_PROJECT_ID",
+      storageBucket: "COLOQUE_AQUI_O_PROJECT_ID.firebasestorage.app",
+      messagingSenderId: "COLOQUE_AQUI_O_MESSAGING_SENDER_ID",
+      appId: "COLOQUE_AQUI_O_APP_ID"
+    };
+
+    // Não altere este valor se quiser que todos os dispositivos vejam as mesmas notas.
+    const sharedDocumentId = "notas-operacionais-principais";
+    const editor = document.getElementById('editor');
+    const status = document.getElementById('sync-status');
+    const localKey = 'cbsl_notas_partilhadas_v1';
+    let saveTimer;
+
+    function setStatus(message, type = '') {
+      status.textContent = message;
+      status.className = type;
+    }
+
+    function saveLocal() { localStorage.setItem(localKey, editor.value); }
+    editor.value = localStorage.getItem(localKey) || '';
+
+    document.getElementById('clear-notes').addEventListener('click', () => {
+      if (!confirm('Apagar todas as notas partilhadas?')) return;
+      editor.value = '';
+      editor.dispatchEvent(new Event('input'));
+    });
+
+    if (firebaseConfig.apiKey.startsWith('COLOQUE_AQUI')) {
+      setStatus('Falta configurar Firebase — guardado só neste dispositivo', 'error');
+    } else {
+      try {
+        const [{ initializeApp }, { getFirestore, doc, onSnapshot, setDoc, serverTimestamp }] = await Promise.all([
+          import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js'),
+          import('https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js')
+        ]);
+        const db = getFirestore(initializeApp(firebaseConfig));
+        const notesRef = doc(db, 'notasPartilhadas', sharedDocumentId);
+
+        editor.addEventListener('input', () => {
+          saveLocal();
+          clearTimeout(saveTimer);
+          setStatus('A guardar…');
+          saveTimer = setTimeout(async () => {
+            try {
+              await setDoc(notesRef, { text: editor.value, updatedAt: serverTimestamp() }, { merge:true });
+              setStatus('Sincronizado', 'online');
+            } catch (error) {
+              console.error('Erro ao guardar notas:', error);
+              setStatus('Erro ao sincronizar — guardado localmente', 'error');
+            }
+          }, 550);
+        });
+
+        onSnapshot(notesRef, snapshot => {
+          const text = snapshot.exists() ? snapshot.data().text : '';
+          if (typeof text === 'string' && text !== editor.value) {
+            editor.value = text;
+            saveLocal();
+          }
+          setStatus('Sincronizado', 'online');
+        }, error => {
+          console.error('Erro ao receber notas:', error);
+          setStatus('Sem acesso à sincronização', 'error');
+        });
+      } catch (error) {
+        console.error('Não foi possível iniciar a sincronização:', error);
+        setStatus('Sincronização indisponível', 'error');
+      }
+    }
+  </script>
+</body>
+</html>
